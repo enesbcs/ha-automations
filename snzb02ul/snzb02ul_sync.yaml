@@ -1,0 +1,140 @@
+# =================================
+# SNZB-02UL - external sensor sync
+# ==================================
+
+alias: SNZB-02UL remote sensors + weather
+description: >-
+  External temperature, humidity and pressure sensor support and Home Assistant
+  weather component icon writing to SNZB-02UL e-ink display.
+mode: single
+max_exceeded: silent
+
+triggers:
+  # 300 seconds / 5 minutes
+  - trigger: time_pattern
+    minutes: "/5"
+  # Refresh at startup
+  - trigger: homeassistant
+    event: start
+
+variables:
+  # Zigbee2MQTT friendly name / IEEE
+  target: "0xa4c138296557ffff"
+
+  # Source sensors
+  source_temperature: sensor.d06245cd1e02_ble_temperature_d06245cd1e02
+  source_humidity: sensor.d06245cd1e02_ble_humidity_d06245cd1e02
+  source_pressure: sensor.d06245cd1e02_ble_pressure_d06245cd1e02
+  weather_entity: weather.forecast_otthon
+
+  # Valid weather states
+  weather_options: [sunny, partly_cloudy, overcast, rain, snow, windy]
+
+  # Home Assistant weather states
+  weather_map:
+    sunny: sunny
+    clear_night: sunny
+    partlycloudy: partly_cloudy
+    partly_cloudy: partly_cloudy
+    cloudy: overcast
+    overcast: overcast
+    fog: overcast
+    rainy: rain
+    rain: rain
+    pouring: rain
+    lightning: rain
+    lightning_rainy: rain
+    hail: rain
+    exceptional: rain
+    snowy: snow
+    snowy_rainy: snow
+    snow: snow
+    windy: windy
+    windy_variant: windy
+
+actions:
+  - variables:
+      temperature: "{{ states(source_temperature) }}"
+      humidity: "{{ states(source_humidity) }}"
+      pressure: "{{ states(source_pressure) }}"
+      weather_state: >-
+        {{ states(weather_entity) | lower | trim
+           | replace('-', '_') | replace(' ', '_') }}
+
+  # --- Temperature (°C) -----------------------------------------------------
+  - if:
+      - condition: template
+        value_template: >
+          {{ is_number(temperature)
+             and -20 <= temperature | float <= 60 }}
+    then:
+      - action: number.set_value
+        target:
+          entity_id: "number.{{ target }}_remote_temperature"
+        data:
+          value: "{{ temperature | float | round(1) }}"
+
+  # --- Humidity (%) -----------------------------------------------------
+  - if:
+      - condition: template
+        value_template: >
+          {{ is_number(humidity)
+             and 5 <= humidity | float <= 95 }}
+    then:
+      - action: number.set_value
+        target:
+          entity_id: "number.{{ target }}_remote_humidity"
+        data:
+          value: "{{ humidity | float | round(1) }}"
+
+  # --- Pressure (hPa) ------------------------------------------------------
+  - if:
+      - condition: template
+        value_template: >
+          {{ is_number(pressure)
+             and 700 <= pressure | float <= 1100 }}
+    then:
+      - action: number.set_value
+        target:
+          entity_id: "number.{{ target }}_remote_pressure"
+        data:
+          value: "{{ pressure | float | round(1) }}"
+
+  # --- Weather -------------------------------------------------------------
+  - variables:
+      weather_option: >-
+        {% set state = weather_state %}
+        {% if state in weather_map %}
+          {{ weather_map[state] }}
+        {% elif state not in ['unknown', 'unavailable', 'none', ''] %}
+          {# No exact match #}
+          {% set ns = namespace(option='') %}
+          {% for option, words in {
+                'rain': ['rain', 'shower', 'drizzle', 'pour', 'thunder', 'storm', 'hail'],
+                'snow': ['snow', 'sleet', 'ice', 'frost'],
+                'windy': ['wind', 'gale'],
+                'overcast': ['cloud', 'overcast', 'fog', 'mist', 'haze'],
+                'sunny': ['sun', 'clear']
+              }.items() %}
+            {% if ns.option == '' %}
+              {% for word in words %}
+                {% if word in state %}
+                  {% set ns.option = option %}
+                {% endif %}
+              {% endfor %}
+            {% endif %}
+          {% endfor %}
+          {{ ns.option if ns.option else 'overcast' }}
+        {% endif %}
+
+  - if:
+      - condition: template
+        value_template: >
+          {{ (weather_option | trim) in weather_options
+             and states('select.' ~ target ~ '_weather') != (weather_option | trim) }}
+    then:
+      - action: select.select_option
+        target:
+          entity_id: "select.{{ target }}_weather"
+        data:
+          option: "{{ weather_option | trim }}"
